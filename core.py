@@ -41,7 +41,63 @@ def set_system_proxy(enable=True):
             subprocess.run(["networksetup", "-setsecurewebproxy", interface, "127.0.0.1", "10808"])
 
     except Exception as e:
-        print(f"Proxy error: {e}")       
+        print(f"Proxy error: {e}")
+
+
+
+def generate_singbox_config(data):
+    server_host = data["server_ip"]
+    params = data["params"]
+
+    vless_outbound = {
+        "type": "vless",
+        "tag": "vless-out",
+        "server": server_host,
+        "server_port": data["port"],
+        "uuid": data["uuid"],
+        "packet_encoding": "xudp"
+    }
+    if params.get("flow"):
+        vless_outbound["flow"] = params["flow"]
+    if params.get("security") in ["tls", "reality"]:
+        vless_outbound["tls"] = {
+            "enabled": True,
+            "server_name": params.get("sni", server_host),
+            "utls":{"enabled": True, "fingerprint": params.get("fp" , "chrome")},
+            "alp": ["h2", "http/1.1"]
+        
+            }
+        if params.get("security") == "reality":
+            vless_outbound["tls"]["reality"] = {
+                "enabled": True,
+                "public_key": params.get("pbk", ""),
+                "short_id": params.get("sid", "")
+            }
+    config ={
+        "log": {"level": "error"},
+        "inbounds": [{
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": "127.0.0.1",
+            "listen_port": 10808,
+            "sniff": True
+        }],
+        "outbounds": [
+            vless_outbound,
+            {"type": "direct", "tag": "direct-out"}
+            ],
+        "auto_detect_interface": True
+    }
+
+    with open("config.json", "w") as f:
+        json.dump(config, f, indent=4)
+
+
+
+    
+
+
+                
 
 
 
