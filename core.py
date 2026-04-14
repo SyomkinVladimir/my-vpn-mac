@@ -4,23 +4,27 @@ import os
 import re
 import platform
 from urllib.parse import urlparse, unquote, parse_qs
+
 def parse_vless_link(vless_url):
     try:
-        vless_url =re.sub(r'\s+', '', vless_url)
+        vless_url = re.sub(r'\s+', '', vless_url)
         if '#' in vless_url:
             vless_url = vless_url.split('#')[0]
         
         parsed_url = urlparse(vless_url)
-        if parsed.scheme != 'vless':
+        
+    
+        if parsed_url.scheme != 'vless': 
             return None
         
         qs = parse_qs(parsed_url.query)
         params = {k: unquote(v[0]) for k, v in qs.items()}
 
         return {
-            "uuid": parsed.username,
-            "server_ip": parsed.hostname,
-            "port": int(parsed.port),
+            "uuid": parsed_url.username,     
+            "server_ip": parsed_url.hostname, 
+            "port": int(parsed_url.port),    
+            "params": params                 
         }
     
     except Exception:
@@ -43,8 +47,6 @@ def set_system_proxy(enable=True):
     except Exception as e:
         print(f"Proxy error: {e}")
 
-
-
 def generate_singbox_config(data):
     server_host = data["server_ip"]
     params = data["params"]
@@ -57,23 +59,25 @@ def generate_singbox_config(data):
         "uuid": data["uuid"],
         "packet_encoding": "xudp"
     }
+    
     if params.get("flow"):
         vless_outbound["flow"] = params["flow"]
+        
     if params.get("security") in ["tls", "reality"]:
         vless_outbound["tls"] = {
             "enabled": True,
             "server_name": params.get("sni", server_host),
-            "utls":{"enabled": True, "fingerprint": params.get("fp" , "chrome")},
-            "alp": ["h2", "http/1.1"]
-        
-            }
+            "utls": {"enabled": True, "fingerprint": params.get("fp" , "chrome")},
+            "alpn": ["h2", "http/1.1"]  
+        }
         if params.get("security") == "reality":
             vless_outbound["tls"]["reality"] = {
                 "enabled": True,
                 "public_key": params.get("pbk", ""),
                 "short_id": params.get("sid", "")
             }
-    config ={
+            
+    config = {
         "log": {"level": "error"},
         "inbounds": [{
             "type": "mixed",
@@ -85,14 +89,17 @@ def generate_singbox_config(data):
         "outbounds": [
             vless_outbound,
             {"type": "direct", "tag": "direct-out"}
+        ],
+        "route": {
+            "rules": [
+                {"ip_cidr": [f"{server_host}/32"], "outbound": "direct-out"}
             ],
-        "auto_detect_interface": True
+            "auto_detect_interface": True
+        }
     }
 
-    with open("config.json", "w") as f:
+    with open("config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
-
-
 
     
 
