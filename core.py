@@ -117,9 +117,18 @@ def generate_singbox_config(data):
     with open("config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
 
-def start_vpn(vless_link, mode, log_callback=None):
+def start_vpn(vless_link, mode, log_callback=None, test_mode=False):
     global core_process
     
+    # --- НОВЫЙ БЛОК ДЛЯ ТЕСТОВ ---
+    if test_mode:
+        if log_callback:
+            log_callback("> [TEST] Запуск в режиме имитации...")
+            log_callback(f"> [TEST] Выбран режим: {mode}")
+            log_callback("> [TEST] Ядро успешно сымитировало работу!")
+        return "успех"
+    # ---------------------------------
+
     if core_process is not None:
         return "уже работает"
     
