@@ -6,7 +6,6 @@ import platform
 import threading
 from urllib.parse import urlparse, unquote, parse_qs
 
-# Глобальная переменная для управления процессом (handle)
 core_process = None
 
 def parse_vless_link(vless_url):
@@ -14,14 +13,10 @@ def parse_vless_link(vless_url):
         vless_url = re.sub(r'\s+', '', vless_url)
         if '#' in vless_url:
             vless_url = vless_url.split('#')[0]
-        
         parsed_url = urlparse(vless_url)
-        if parsed_url.scheme != 'vless': 
-            return None
-        
+        if parsed_url.scheme != 'vless': return None
         qs = parse_qs(parsed_url.query)
         params = {k: unquote(v[0]) for k, v in qs.items()}
-
         return {
             "uuid": parsed_url.username,     
             "server_ip": parsed_url.hostname, 
@@ -32,8 +27,7 @@ def parse_vless_link(vless_url):
         return None
 
 def set_system_proxy(enable=True):
-    if platform.system() != "Darwin":
-        return
+    if platform.system() != "Darwin": return
     interface = "Wi-Fi"
     state = "on" if enable else "off"
     try:
@@ -58,8 +52,7 @@ def generate_singbox_config(data, mode):
         "packet_encoding": "xudp"
     }
     
-    if params.get("flow"):
-        vless_outbound["flow"] = params["flow"]
+    if params.get("flow"): vless_outbound["flow"] = params["flow"]
         
     if params.get("security") in ["tls", "reality"]:
         vless_outbound["tls"] = {
@@ -76,12 +69,12 @@ def generate_singbox_config(data, mode):
             }
             
     inbounds = []
-    if mode == "VPN (TUN)":
+    # Теперь оба режима TUN идут сюда
+    if mode in ["VPN (TUN)", "Умный VPN (Split)"]:
         inbounds.append({
             "type": "tun",
             "tag": "tun-in",
-            # Строку "interface_name": "utun" мы полностью УДАЛИЛИ
-            "address": ["172.19.0.1/30"], # ИСПРАВЛЕНО: Новый синтаксис (список)
+            "address": ["172.19.0.1/30"],
             "auto_route": True,
             "strict_route": True,
             "stack": "system",
@@ -96,26 +89,34 @@ def generate_singbox_config(data, mode):
             "sniff": True
         })
 
+    # Базовые правила маршрутизации
+    rules = [
+        {"protocol": "dns", "outbound": "dns-out"},
+        {"ip_cidr": [f"{server_host}/32"], "outbound": "direct-out"},
+        {"ip_cidr": ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8"], "outbound": "direct-out"}
+    ]
+
+    # Внедряем маршрутизацию для RU-сегмента, если выбран Умный режим
+    if mode == "Умный VPN (Split)":
+        rules.insert(1, {
+            "domain_suffix": [".ru", ".рф", ".su", "yandex.ru", "vk.com", "mail.ru", "sberbank.ru", "gosuslugi.ru"],
+            "outbound": "direct-out"
+        })
+
     config = {
         "log": {"level": "error"},
-        # --- НОВЫЙ БЛОК: УЧИМ ЯДРО ПОНИМАТЬ ИМЕНА САЙТОВ ---
         "dns": {
-            "servers": [
-                {"tag": "google-dns", "address": "8.8.8.8", "detour": "vless-out"}
-            ],
-            "strategy": "ipv4_only" # Защита от утечек IPv6
+            "servers": [{"tag": "google-dns", "address": "8.8.8.8", "detour": "vless-out"}],
+            "strategy": "ipv4_only"
         },
         "inbounds": inbounds,
         "outbounds": [
             vless_outbound, 
             {"type": "direct", "tag": "direct-out"},
-            {"type": "dns", "tag": "dns-out"} # Специальный шлюз для обработки DNS
+            {"type": "dns", "tag": "dns-out"}
         ],
         "route": {
-            "rules": [
-                {"protocol": "dns", "outbound": "dns-out"}, # Перехватываем DNS
-                {"ip_cidr": [f"{server_host}/32"], "outbound": "direct-out"}
-            ],
+            "rules": rules,
             "auto_detect_interface": True
         }
     }
@@ -125,25 +126,21 @@ def generate_singbox_config(data, mode):
 
 def start_vpn(vless_link, mode, log_callback=None, test_mode=False):
     global core_process
-    
     if test_mode:
         if log_callback: log_callback("> [TEST] Имитация запуска...")
         return "успех"
-
-    if core_process is not None:
-        return "уже работает"
+    if core_process is not None: return "уже работает"
     
     parsed_data = parse_vless_link(vless_link)
     if not parsed_data: return "ошибка ссылки"
     
     generate_singbox_config(parsed_data, mode)
-    
-    # Очистка старых процессов с правами sudo
     os.system("sudo killall sing-box 2>/dev/null")
 
     try:
         cmd = ["./sing-box", "run", "-c", "config.json"]
-        if mode == "VPN (TUN)":
+        # Запрашиваем sudo (теперь невидимо) для обоих TUN режимов
+        if mode in ["VPN (TUN)", "Умный VPN (Split)"]:
             cmd = ["sudo"] + cmd
 
         core_process = subprocess.Popen(
@@ -157,14 +154,10 @@ def start_vpn(vless_link, mode, log_callback=None, test_mode=False):
         if log_callback:
             def read_logs():
                 for line in core_process.stdout:
-                    if line:
-                        clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line.strip())
-                        log_callback(clean_line)
+                    if line: log_callback(re.sub(r'\x1b\[[0-9;]*m', '', line.strip()))
             threading.Thread(target=read_logs, daemon=True).start()
 
-        if mode == "Системный прокси":
-            set_system_proxy(True)
-        
+        if mode == "Системный прокси": set_system_proxy(True)
         return "успех"
     except Exception as e:
         core_process = None
