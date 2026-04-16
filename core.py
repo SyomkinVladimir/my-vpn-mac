@@ -4,21 +4,19 @@ import os
 import re
 import platform
 import threading
+import time
 from urllib.parse import urlparse, unquote, parse_qs
 
 core_process = None
 is_manually_stopped = False
+MAX_RETRIES = 3
+current_retries = 0
 
-# --- НОВЫЙ БЛОК: УПРАВЛЕНИЕ ФАЙРВОЛОМ (KILL SWITCH) ---
 def lock_network():
-    """Жестко блокирует весь интернет-трафик через pf."""
-    # Правило 'block drop all' приказывает ядру macOS сбрасывать любые пакеты
     os.system('echo "block drop all" | sudo pfctl -e -f - 2>/dev/null')
 
 def unlock_network():
-    """Снимает блокировку и выключает pf."""
     os.system('sudo pfctl -d 2>/dev/null')
-# -------------------------------------------------------
 
 def parse_vless_link(vless_url):
     try:
@@ -28,12 +26,7 @@ def parse_vless_link(vless_url):
         if parsed_url.scheme != 'vless': return None
         qs = parse_qs(parsed_url.query)
         params = {k: unquote(v[0]) for k, v in qs.items()}
-        return {
-            "uuid": parsed_url.username,     
-            "server_ip": parsed_url.hostname, 
-            "port": int(parsed_url.port),    
-            "params": params                 
-        }
+        return {"uuid": parsed_url.username, "server_ip": parsed_url.hostname, "port": int(parsed_url.port), "params": params}
     except Exception: return None
 
 def set_system_proxy(enable=True):
@@ -70,13 +63,12 @@ def generate_singbox_config(data, mode):
     inbounds = []
     if mode in ["VPN (TUN)", "Умный VPN (Split)"]:
         inbounds.append({
-            "type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30"],
+            "type": "tun", "tag": "tun-in", 
+            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], 
             "auto_route": True, "strict_route": True, "stack": "system", "sniff": True
         })
     else:
-        inbounds.append({
-            "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 10808, "sniff": True
-        })
+        inbounds.append({"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 10808, "sniff": True})
 
     rules = [
         {"protocol": "dns", "outbound": "dns-out"},
@@ -84,6 +76,8 @@ def generate_singbox_config(data, mode):
         {"ip_cidr": ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8"], "outbound": "direct-out"}
     ]
     if mode == "Умный VPN (Split)":
+        # Явно прячем Google в туннель от греха подальше
+        rules.insert(0, {"domain_suffix": ["google.com", "googleapis.com", "gstatic.com"], "outbound": "vless-out"})
         rules.insert(1, {"domain_suffix": [".ru", ".рф", ".su", "yandex.ru", "vk.com", "mail.ru"], "outbound": "direct-out"})
 
     config = {
@@ -95,32 +89,59 @@ def generate_singbox_config(data, mode):
     }
     with open("config.json", "w", encoding="utf-8") as f: json.dump(config, f, indent=4)
 
-def monitor_process(process, on_crash_callback):
+def monitor_process(process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback):
+    global current_retries, core_process
     process.wait()
-    if not is_manually_stopped:
-        lock_network() # <--- ЕСЛИ УПАЛО, БЛОКИРУЕМ СЕТЬ
-        if on_crash_callback: on_crash_callback()
-
-def start_vpn(vless_link, mode, log_callback=None, on_crash_callback=None):
-    global core_process, is_manually_stopped
-    is_manually_stopped = False
-    unlock_network() # На всякий случай снимаем блокировку перед стартом
     
+    if not is_manually_stopped:
+        core_process = None # <--- ИСПРАВЛЕНИЕ: Очищаем мертвый процесс!
+        
+        if current_retries < MAX_RETRIES:
+            current_retries += 1
+            if log_callback: log_callback(f"Попытка восстановления {current_retries}/{MAX_RETRIES}...")
+            
+            time.sleep(1.5)
+            
+            result = start_vpn(vless_link, mode, log_callback, on_crash_callback, on_recover_callback, is_retry=True)
+            if result == "успех":
+                if on_recover_callback: on_recover_callback(mode)
+            else:
+                # Если рестарт тоже сломался — блокируем сеть
+                lock_network()
+                if on_crash_callback: on_crash_callback()
+        else:
+            lock_network()
+            if on_crash_callback: on_crash_callback()
+
+def start_vpn(vless_link, mode, log_callback=None, on_crash_callback=None, on_recover_callback=None, is_retry=False):
+    global core_process, is_manually_stopped, current_retries
+    
+    if not is_retry:
+        current_retries = 0
+        is_manually_stopped = False
+    
+    unlock_network()
     if core_process is not None: return "уже работает"
+    
     parsed_data = parse_vless_link(vless_link)
     if not parsed_data: return "ошибка ссылки"
+    
     generate_singbox_config(parsed_data, mode)
     os.system("sudo killall sing-box 2>/dev/null")
+    
     try:
         cmd = ["./sing-box", "run", "-c", "config.json"]
         if mode in ["VPN (TUN)", "Умный VPN (Split)"]: cmd = ["sudo"] + cmd
+        
         core_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        if log_callback:
-            def read_logs():
-                for line in core_process.stdout:
-                    if line: log_callback(re.sub(r'\x1b\[[0-9;]*m', '', line.strip()))
-            threading.Thread(target=read_logs, daemon=True).start()
-        threading.Thread(target=monitor_process, args=(core_process, on_crash_callback), daemon=True).start()
+        
+        def read_logs():
+            for line in core_process.stdout:
+                if line and log_callback: log_callback(re.sub(r'\x1b\[[0-9;]*m', '', line.strip()))
+        threading.Thread(target=read_logs, daemon=True).start()
+        
+        threading.Thread(target=monitor_process, args=(core_process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback), daemon=True).start()
+        
         if mode == "Системный прокси": set_system_proxy(True)
         return "успех"
     except Exception as e:
@@ -130,7 +151,7 @@ def start_vpn(vless_link, mode, log_callback=None, on_crash_callback=None):
 def stop_vpn():
     global core_process, is_manually_stopped
     is_manually_stopped = True
-    unlock_network() # <--- СНИМАЕМ БЛОКИРОВКУ, КОГДА ОТКЛЮЧАЕМ РУКАМИ
+    unlock_network()
     set_system_proxy(False)
     if core_process is not None:
         os.system("sudo killall sing-box 2>/dev/null")

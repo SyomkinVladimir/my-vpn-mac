@@ -20,16 +20,26 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.DARK
     page.window_width = 700
     page.window_height = 550
-    page.padding = 30
 
     saved_settings = load_settings()
-
     status_text = ft.Text("Статус: ОТКЛЮЧЕНО", color=ft.Colors.RED_400, size=16, weight="bold")
 
     def on_vpn_crash():
-        status_text.value = "⚠️ СЕТЬ ЗАБЛОКИРОВАНА: VPN упал! Нажмите 'ОТКЛЮЧИТЬ' для возврата в сеть!"
+        status_text.value = "⚠️ СЕТЬ ЗАБЛОКИРОВАНА: Все 3 попытки восстановления провалены."
         status_text.color = ft.Colors.ORANGE_700
         btn_connect.disabled = False
+        page.update()
+
+    def on_vpn_recover(mode):
+        """Возвращает зеленый статус, если процесс удалось поднять."""
+        status_text.value = f"Статус: ПОДКЛЮЧЕНО ({mode}) [Восстановлено]"
+        status_text.color = ft.Colors.GREEN_400
+        page.update()
+
+    def update_status_log(message):
+        if "Попытка восстановления" in message:
+            status_text.value = f"🔄 {message}"
+            status_text.color = ft.Colors.CYAN_400
         page.update()
 
     mode_picker = ft.Dropdown(
@@ -52,7 +62,13 @@ def main(page: ft.Page):
         btn_connect.disabled = True
         page.update()
 
-        result = core.start_vpn(link_input.value, mode_picker.value, on_crash_callback=on_vpn_crash)
+        result = core.start_vpn(
+            link_input.value, 
+            mode_picker.value, 
+            log_callback=update_status_log, 
+            on_crash_callback=on_vpn_crash,
+            on_recover_callback=on_vpn_recover # <--- Передаем новый коллбек спасения
+        )
         if result == "успех":
             status_text.value = f"Статус: ПОДКЛЮЧЕНО ({mode_picker.value})"
             status_text.color = ft.Colors.GREEN_400
