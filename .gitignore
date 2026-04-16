@@ -1,0 +1,18 @@
+# Виртуальное окружение
+venv/
+
+# Кэш Python
+__pycache__/
+
+# Бинарный файл ядра
+sing-box
+
+# Временные файлы конфигурации
+config.json
+
+# Системные файлы Mac
+.DS_Store
+
+# Секреты и локальные конфиги
+config.json
+settings.json
