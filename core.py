@@ -9,6 +9,17 @@ from urllib.parse import urlparse, unquote, parse_qs
 core_process = None
 is_manually_stopped = False
 
+# --- НОВЫЙ БЛОК: УПРАВЛЕНИЕ ФАЙРВОЛОМ (KILL SWITCH) ---
+def lock_network():
+    """Жестко блокирует весь интернет-трафик через pf."""
+    # Правило 'block drop all' приказывает ядру macOS сбрасывать любые пакеты
+    os.system('echo "block drop all" | sudo pfctl -e -f - 2>/dev/null')
+
+def unlock_network():
+    """Снимает блокировку и выключает pf."""
+    os.system('sudo pfctl -d 2>/dev/null')
+# -------------------------------------------------------
+
 def parse_vless_link(vless_url):
     try:
         vless_url = re.sub(r'\s+', '', vless_url)
@@ -86,11 +97,15 @@ def generate_singbox_config(data, mode):
 
 def monitor_process(process, on_crash_callback):
     process.wait()
-    if not is_manually_stopped and on_crash_callback: on_crash_callback()
+    if not is_manually_stopped:
+        lock_network() # <--- ЕСЛИ УПАЛО, БЛОКИРУЕМ СЕТЬ
+        if on_crash_callback: on_crash_callback()
 
 def start_vpn(vless_link, mode, log_callback=None, on_crash_callback=None):
     global core_process, is_manually_stopped
     is_manually_stopped = False
+    unlock_network() # На всякий случай снимаем блокировку перед стартом
+    
     if core_process is not None: return "уже работает"
     parsed_data = parse_vless_link(vless_link)
     if not parsed_data: return "ошибка ссылки"
@@ -115,6 +130,7 @@ def start_vpn(vless_link, mode, log_callback=None, on_crash_callback=None):
 def stop_vpn():
     global core_process, is_manually_stopped
     is_manually_stopped = True
+    unlock_network() # <--- СНИМАЕМ БЛОКИРОВКУ, КОГДА ОТКЛЮЧАЕМ РУКАМИ
     set_system_proxy(False)
     if core_process is not None:
         os.system("sudo killall sing-box 2>/dev/null")

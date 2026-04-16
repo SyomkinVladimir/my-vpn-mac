@@ -27,7 +27,7 @@ def main(page: ft.Page):
     status_text = ft.Text("Статус: ОТКЛЮЧЕНО", color=ft.Colors.RED_400, size=16, weight="bold")
 
     def on_vpn_crash():
-        status_text.value = "⚠️ КРИТИЧЕСКАЯ ОШИБКА: VPN упал! Ваш IP может быть открыт!"
+        status_text.value = "⚠️ СЕТЬ ЗАБЛОКИРОВАНА: VPN упал! Нажмите 'ОТКЛЮЧИТЬ' для возврата в сеть!"
         status_text.color = ft.Colors.ORANGE_700
         btn_connect.disabled = False
         page.update()
