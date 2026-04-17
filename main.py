@@ -3,7 +3,9 @@ import core
 import json
 import os
 
-SETTINGS_FILE = "settings.json"
+HOME_DIR = os.path.expanduser("~/.myvpn")
+os.makedirs(HOME_DIR, exist_ok=True)
+SETTINGS_FILE = os.path.join(HOME_DIR, "settings.json")
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -24,20 +26,24 @@ def main(page: ft.Page):
     saved_settings = load_settings()
     status_text = ft.Text("Статус: ОТКЛЮЧЕНО", color=ft.Colors.RED_400, size=16, weight="bold")
 
-    def on_vpn_crash():
-        status_text.value = "⚠️ СЕТЬ ЗАБЛОКИРОВАНА: Все 3 попытки восстановления провалены."
+    # --- ИНТЕГРАЦИЯ РЕШЕНИЯ КЛОДА ---
+    if not core.check_and_setup_permissions():
+        page.add(ft.Text("⚠️ Внимание: Без прав администратора режимы TUN работать не будут!", color=ft.Colors.ORANGE_400, weight="bold"))
+    # --------------------------------
+
+    def on_vpn_crash(error_reason=""):
+        status_text.value = f"⚠️ ОШИБКА: {error_reason}"
         status_text.color = ft.Colors.ORANGE_700
         btn_connect.disabled = False
         page.update()
 
     def on_vpn_recover(mode):
-        """Возвращает зеленый статус, если процесс удалось поднять."""
         status_text.value = f"Статус: ПОДКЛЮЧЕНО ({mode}) [Восстановлено]"
         status_text.color = ft.Colors.GREEN_400
         page.update()
 
     def update_status_log(message):
-        if "Попытка восстановления" in message:
+        if "Попытка" in message or "Восстановление" in message:
             status_text.value = f"🔄 {message}"
             status_text.color = ft.Colors.CYAN_400
         page.update()
@@ -67,7 +73,7 @@ def main(page: ft.Page):
             mode_picker.value, 
             log_callback=update_status_log, 
             on_crash_callback=on_vpn_crash,
-            on_recover_callback=on_vpn_recover # <--- Передаем новый коллбек спасения
+            on_recover_callback=on_vpn_recover
         )
         if result == "успех":
             status_text.value = f"Статус: ПОДКЛЮЧЕНО ({mode_picker.value})"

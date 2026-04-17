@@ -1,18 +1,32 @@
-# Виртуальное окружение
+# Виртуальное окружение (Virtual Environment)
 venv/
+.env
 
-# Кэш Python
+# Кэш Python и байт-код
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Бинарный файл ядра
+# Сборка и релизы (Build & Distribution)
+build/
+dist/
+*.spec
+*.dmg
+
+# Бинарные файлы ядра
 sing-box
 
-# Временные файлы конфигурации
-config.json
-
-# Системные файлы Mac
-.DS_Store
-
-# Секреты и локальные конфиги
+# Конфигурации и секреты (Local config & Secrets)
 config.json
 settings.json
+.myvpn/
+
+# Системные файлы macOS (System files)
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Настройки IDE (VS Code / Windsurf)
+.vscode/
+.history/
