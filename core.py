@@ -113,6 +113,7 @@ def generate_singbox_config(data, mode):
         "server_port": data["port"],
         "uuid": data["uuid"],
         "packet_encoding": "xudp",
+        "tcp_fast_open": True,
     }
     if params.get("flow"):
         vless_outbound["flow"] = params["flow"]
@@ -137,9 +138,10 @@ def generate_singbox_config(data, mode):
                 "type": "tun",
                 "tag": "tun-in",
                 "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+                "mtu": 9000,
                 "auto_route": True,
                 "strict_route": True,
-                "stack": "system",
+                "stack": "gvisor", # Оставляем gvisor — он устранил задержку QUIC
                 "sniff": True,
             }
         )
@@ -150,6 +152,7 @@ def generate_singbox_config(data, mode):
                 "tag": "mixed-in",
                 "listen": "127.0.0.1",
                 "listen_port": 10808,
+                "tcp_fast_open": True,
                 "sniff": True,
             }
         )
@@ -160,44 +163,36 @@ def generate_singbox_config(data, mode):
         {"ip_cidr": ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8"], "outbound": "direct-out"},
     ]
     if mode == "Умный VPN (Split)":
-        rules.insert(
-            0,
-            {
-                "domain_suffix": ["google.com", "googleapis.com", "gstatic.com"],
-                "outbound": "vless-out",
-            },
-        )
-        rules.insert(
-            1,
-            {
-                "domain_suffix": [".ru", ".рф", ".su", "yandex.ru", "vk.com", "mail.ru"],
-                "outbound": "direct-out",
-            },
-        )
+        rules.insert(0, {
+            "domain_suffix": [
+                "google.com", "googleapis.com", "gstatic.com", 
+                "youtube.com", "googlevideo.com", "ytimg.com", "ggpht.com",
+                "generativeai.google" # Явно отправляем API Gemini в туннель
+            ], 
+            "outbound": "vless-out"
+        })
+        rules.insert(1, {"domain_suffix": [".ru", ".рф", ".su", "yandex.ru", "vk.com", "mail.ru"], "outbound": "direct-out"})
 
     config = {
         "log": {"level": "error"},
         "dns": {
             "servers": [
-                {
-                    "tag": "google-dns",
-                    "address": "8.8.8.8",
-                    "detour": "vless-out",
-                }
+                {"tag": "cloudflare-dns", "address": "1.1.1.1", "detour": "vless-out"},
+                {"tag": "google-dns", "address": "8.8.8.8", "detour": "vless-out"}
             ],
-            "strategy": "ipv4_only",
+            "strategy": "ipv4_only", # ИСПРАВЛЕНИЕ: Жестко режем IPv6, чтобы не палить регион!
+            "independent_cache": True,
         },
         "inbounds": inbounds,
         "outbounds": [
-            vless_outbound,
-            {"type": "direct", "tag": "direct-out"},
-            {"type": "dns", "tag": "dns-out"},
+            vless_outbound, 
+            {"type": "direct", "tag": "direct-out"}, 
+            {"type": "dns", "tag": "dns-out"}
         ],
         "route": {"rules": rules, "auto_detect_interface": True},
     }
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
-
 
 def monitor_process(process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback):
     global current_retries, core_process
