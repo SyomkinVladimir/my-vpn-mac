@@ -229,67 +229,42 @@ def monitor_process(process, vless_link, mode, log_callback, on_crash_callback, 
             on_crash_callback("Лимит попыток исчерпан")
 
 
-def start_vpn(
-    vless_link,
-    mode,
-    log_callback=None,
-    on_crash_callback=None,
-    on_recover_callback=None,
-    is_retry=False,
-):
+def start_vpn(vless_link, mode, log_callback=None, on_crash_callback=None, on_recover_callback=None, is_retry=False):
     global core_process, is_manually_stopped, current_retries
-
     if not is_retry:
         current_retries = 0
         is_manually_stopped = False
-
     unlock_network()
-    if core_process is not None:
-        return "уже работает"
-
+    if core_process is not None: return "уже работает"
     parsed_data = parse_vless_link(vless_link)
-    if not parsed_data:
-        return "ошибка ссылки"
-
+    if not parsed_data: return "ошибка ссылки"
     generate_singbox_config(parsed_data, mode)
     os.system("/usr/bin/sudo -n /usr/bin/killall sing-box 2>/dev/null || killall sing-box 2>/dev/null")
-
     try:
-        # УБРАЛИ /usr/bin/env. Теперь sudo видит ТОЛЬКО разрешенный sing-box
-        if mode in ["VPN (TUN)", "Умный VPN (Split)"]:
-            cmd = ["/usr/bin/sudo", "-n", SINGBOX_PATH, "run", "-c", CONFIG_FILE]
-        else:
-            cmd = [SINGBOX_PATH, "run", "-c", CONFIG_FILE]
-
+        cmd = ["/usr/bin/sudo", "-n", SINGBOX_PATH, "run", "-c", CONFIG_FILE] if mode in ["VPN (TUN)", "Умный VPN (Split)"] else [SINGBOX_PATH, "run", "-c", CONFIG_FILE]
+        
+        # ИЗМЕНЕНИЕ: Добавлен параметр stdin=subprocess.DEVNULL
+        # Зачем применяем: В .app бандле нет терминала. Если не направить ввод в DEVNULL, 
+        # бинарник sing-box попытается обратиться к системной консоли, получит отказ и крашнется.
         core_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            cwd=HOME_DIR,
+            cmd, 
+            stdin=subprocess.DEVNULL, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.STDOUT, 
+            text=True, 
+            bufsize=1, 
+            cwd=HOME_DIR
         )
-
         def read_logs():
             for line in core_process.stdout:
-                if line and log_callback:
-                    log_callback(re.sub(r"\x1b\[[0-9;]*m", "", line.strip()))
-
+                if line and log_callback: log_callback(re.sub(r"\x1b\[[0-9;]*m", "", line.strip()))
         threading.Thread(target=read_logs, daemon=True).start()
-
         time.sleep(0.5)
         if core_process.poll() is not None:
             core_process = None
             return "Нет прав администратора (sudo)"
-
-        threading.Thread(
-            target=monitor_process,
-            args=(core_process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback),
-            daemon=True,
-        ).start()
-
-        if mode == "Системный прокси":
-            set_system_proxy(True)
+        threading.Thread(target=monitor_process, args=(core_process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback), daemon=True).start()
+        if mode == "Системный прокси": set_system_proxy(True)
         return "успех"
     except Exception as e:
         core_process = None

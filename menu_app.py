@@ -19,14 +19,12 @@ def load_settings():
 
 class OctaraMenuApp(rumps.App):
     def __init__(self):
-        # Название приложения и базовая иконка (осьминог)
         super(OctaraMenuApp, self).__init__("🐙", quit_button=None)
         
         self.settings = load_settings()
         self.timer_running = False
         self.start_time = 0
 
-        # Элементы выпадающего меню
         self.status_item = rumps.MenuItem("Статус: ОТКЛЮЧЕНО")
         self.timer_item = rumps.MenuItem("Время сессии: 00:00:00")
         self.timer_item.hidden = True
@@ -38,19 +36,17 @@ class OctaraMenuApp(rumps.App):
         self.settings_btn = rumps.MenuItem("⚙️ Настройки (main.py)", callback=self.open_settings)
         self.quit_btn = rumps.MenuItem("Выход", callback=self.quit_app)
 
-        # Собираем меню
         self.menu = [
             self.status_item,
             self.timer_item,
-            None, # Разделитель
+            None,
             self.connect_btn,
             self.disconnect_btn,
-            None, # Разделитель
+            None,
             self.settings_btn,
             self.quit_btn
         ]
 
-    # Нативный фоновый таймер macOS (обновляется раз в 1 сек)
     @rumps.timer(1)
     def update_timer(self, _):
         if self.timer_running:
@@ -71,16 +67,15 @@ class OctaraMenuApp(rumps.App):
         self.status_item.title = "Статус: ЗАПУСК..."
         self.connect_btn.hidden = True
         
-        # Запускаем ядро в фоне, чтобы не "повесить" системное меню
         threading.Thread(target=self._run_core, args=(link, mode), daemon=True).start()
 
     def _run_core(self, link, mode):
-        # Дергаем наш core.py
-        result = core.start_vpn(link, mode)
+        # Дергаем ядро с обработчиком ошибок (on_crash_callback)
+        result = core.start_vpn(link, mode, on_crash_callback=self.on_crash)
         
         if result == "успех":
             self.status_item.title = f"Статус: ПОДКЛЮЧЕНО ({mode})"
-            self.title = "🐙" # ИСПРАВЛЕНО: Убрали приписку (ВКЛ)
+            self.title = "🐙" 
             self.disconnect_btn.hidden = False
             self.start_time = time.time()
             self.timer_running = True
@@ -88,8 +83,18 @@ class OctaraMenuApp(rumps.App):
         else:
             self.status_item.title = f"⚠️ Ошибка: {result}"
             self.connect_btn.hidden = False
-            self.title = "🐙" # ИСПРАВЛЕНО: Убрали приписку (ОШИБКА)
+            self.title = "🐙" 
             rumps.alert("Ошибка ядра", result)
+
+    def on_crash(self, reason):
+        # Вызывается из core.py, если sing-box упадет (отсутствие сети и т.д.)
+        self.status_item.title = f"⚠️ Ошибка: {reason}"
+        self.title = "🐙"
+        self.timer_running = False
+        self.timer_item.hidden = True
+        self.connect_btn.hidden = False
+        self.disconnect_btn.hidden = True
+        core.unlock_network() 
 
     def disconnect(self, _):
         core.stop_vpn()
@@ -101,6 +106,7 @@ class OctaraMenuApp(rumps.App):
         self.connect_btn.hidden = False
 
     def open_settings(self, _):
+        # Жесткий путь к виртуальному окружению
         project_dir = os.path.expanduser("~/my-vpn-mac")
         flet_bin = os.path.join(project_dir, "venv/bin/flet")
         os.system(f"cd {project_dir} && {flet_bin} run main.py &")
@@ -110,6 +116,5 @@ class OctaraMenuApp(rumps.App):
         rumps.quit_application()
 
 if __name__ == "__main__":
-    # Проверка sudo при старте агента
     core.check_and_setup_permissions()
     OctaraMenuApp().run()
