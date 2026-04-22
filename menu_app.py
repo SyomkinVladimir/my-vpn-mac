@@ -15,13 +15,12 @@ def load_settings():
                 return json.load(f)
         except Exception:
             pass
-    return {"link": "", "mode": "Системный прокси"}
+    return {"mode": "Умный VPN (Split)"}
 
 class OctaraMenuApp(rumps.App):
     def __init__(self):
         super(OctaraMenuApp, self).__init__("🐙", quit_button=None)
         
-        self.settings = load_settings()
         self.timer_running = False
         self.start_time = 0
 
@@ -33,6 +32,8 @@ class OctaraMenuApp(rumps.App):
         self.disconnect_btn = rumps.MenuItem("🔴 Отключить", callback=self.disconnect)
         self.disconnect_btn.hidden = True
         
+        self.logs_btn = rumps.MenuItem("📜 Открыть логи", callback=self.open_logs)
+        
         self.settings_btn = rumps.MenuItem("⚙️ Настройки (main.py)", callback=self.open_settings)
         self.quit_btn = rumps.MenuItem("Выход", callback=self.quit_app)
 
@@ -42,6 +43,7 @@ class OctaraMenuApp(rumps.App):
             None,
             self.connect_btn,
             self.disconnect_btn,
+            self.logs_btn,
             None,
             self.settings_btn,
             self.quit_btn
@@ -56,9 +58,18 @@ class OctaraMenuApp(rumps.App):
             self.timer_item.title = f"Время сессии: {hours:02}:{minutes:02}:{seconds:02}"
 
     def connect(self, _):
-        self.settings = load_settings()
-        link = self.settings.get("link", "")
-        mode = self.settings.get("mode", "Умный VPN (Split)")
+        settings = load_settings()
+        mode = settings.get("mode", "Умный VPN (Split)")
+
+        # Data Migration (Миграция данных): Читаем из зашифрованного Keychain
+        link = core.get_vless_link()
+
+        # Если в Keychain пусто, берем из старого файла и переносим в хранилище Apple
+        if not link:
+            old_link = settings.get("link", "")
+            if old_link:
+                core.save_vless_link(old_link)
+                link = old_link
 
         if not link:
             rumps.alert("Ошибка", "Ключ VLESS не задан. Нажмите 'Настройки' и добавьте ключ.")
@@ -70,7 +81,6 @@ class OctaraMenuApp(rumps.App):
         threading.Thread(target=self._run_core, args=(link, mode), daemon=True).start()
 
     def _run_core(self, link, mode):
-        # Дергаем ядро с обработчиком ошибок (on_crash_callback)
         result = core.start_vpn(link, mode, on_crash_callback=self.on_crash)
         
         if result == "успех":
@@ -87,7 +97,6 @@ class OctaraMenuApp(rumps.App):
             rumps.alert("Ошибка ядра", result)
 
     def on_crash(self, reason):
-        # Вызывается из core.py, если sing-box упадет (отсутствие сети и т.д.)
         self.status_item.title = f"⚠️ Ошибка: {reason}"
         self.title = "🐙"
         self.timer_running = False
@@ -105,8 +114,12 @@ class OctaraMenuApp(rumps.App):
         self.disconnect_btn.hidden = True
         self.connect_btn.hidden = False
 
+    def open_logs(self, _):
+        # Открывает лог в нативном приложении Console
+        log_path = os.path.expanduser("~/.myvpn/octara.log")
+        os.system(f"open -a Console {log_path}")
+
     def open_settings(self, _):
-        # Жесткий путь к виртуальному окружению
         project_dir = os.path.expanduser("~/my-vpn-mac")
         flet_bin = os.path.join(project_dir, "venv/bin/flet")
         os.system(f"cd {project_dir} && {flet_bin} run main.py &")

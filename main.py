@@ -2,60 +2,57 @@ import flet as ft
 import core
 import json
 import os
-import time  # Добавили для работы с временем
-import threading # Добавили для фонового потока таймера
+import time
+import threading
 
+# Настройка путей. Оставляем только для хранения несекретных настроек (режима работы)
 HOME_DIR = os.path.expanduser("~/.myvpn")
 os.makedirs(HOME_DIR, exist_ok=True)
 SETTINGS_FILE = os.path.join(HOME_DIR, "settings.json")
 
-def load_settings():
+def load_mode():
+    """
+    Зачем применяем: Загружает только несекретные пользовательские предпочтения.
+    Пароль (VLESS-ссылка) отсюда ИСКЛЮЧЕН ради безопасности.
+    """
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return json.load(f).get("mode", "Умный VPN (Split)")
         except Exception:
             pass
-    return {"link": "", "mode": "Системный прокси"}
+    return "Умный VPN (Split)"
 
-def save_settings(link, mode):
+def save_mode(mode):
+    """Сохраняет выбранный режим маршрутизации в обычный JSON."""
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"link": link, "mode": mode}, f)
+        json.dump({"mode": mode}, f)
 
 def main(page: ft.Page):
-    page.title = "My VPN Client (macOS)"
+    page.title = "Octara VPN Settings"
     page.theme_mode = ft.ThemeMode.DARK
     page.window_width = 700
     page.window_height = 550
     page.window_icon = "Octara.png"
 
-    saved_settings = load_settings()
-    current_link = saved_settings.get("link", "")
+    saved_mode = load_mode()
     
-    # Переменные для управления таймером
+    # ИНТЕГРАЦИЯ БЕЗОПАСНОСТИ: 
+    # Зачем применяем: Читаем ключ напрямую из системной Связки ключей macOS через наше ядро.
+    # Если ключа нет, возвращаем пустую строку, чтобы интерфейс не упал.
+    current_link = core.get_vless_link() or ""
+    
     timer_running = False
     start_time = 0
 
-    status_text = ft.Text(
-        "Статус: ОТКЛЮЧЕНО",
-        color=ft.Colors.RED_400,
-        size=16,
-        weight="bold"
-    )
-    
-    # Новый элемент UI для отображения времени сессии
-    session_timer_text = ft.Text(
-        "Время сессии: 00:00:00",
-        color=ft.Colors.GREY_400,
-        size=14,
-        visible=False # Скрыт, пока нет подключения
-    )
+    status_text = ft.Text("Статус: ОТКЛЮЧЕНО", color=ft.Colors.RED_400, size=16, weight="bold")
+    session_timer_text = ft.Text("Время сессии: 00:00:00", color=ft.Colors.GREY_400, size=14, visible=False)
 
     if not core.check_and_setup_permissions():
         page.add(ft.Text("⚠️ Требуются права администратора!", color=ft.Colors.ORANGE_400))
 
-    # Функция, которая бежит в отдельном потоке и обновляет часы
     def update_timer():
+        """Фоновый поток обновления таймера."""
         nonlocal timer_running
         while timer_running:
             elapsed = int(time.time() - start_time)
@@ -66,18 +63,17 @@ def main(page: ft.Page):
             time.sleep(1)
 
     def on_vpn_crash(error_reason=""):
+        """Обработчик аварийной остановки."""
         nonlocal timer_running
-        timer_running = False # Останавливаем таймер при падении
+        timer_running = False
         status_text.value = f"⚠️ ОШИБКА: {error_reason}"
         status_text.color = ft.Colors.ORANGE_700
         btn_connect.disabled = False
         page.update()
 
-    # ... функции on_vpn_recover и update_status_log остаются без изменений ...
-
     mode_picker = ft.Dropdown(
         label="Режим работы",
-        value=saved_settings.get("mode", "Системный прокси"),
+        value=saved_mode,
         options=[
             ft.dropdown.Option("Системный прокси"),
             ft.dropdown.Option("VPN (TUN)"),
@@ -86,14 +82,33 @@ def main(page: ft.Page):
         width=300
     )
 
-    # --- Твоя карточка профиля ---
-    dialog_link_input = ft.TextField(label="Ссылка vless://", multiline=True, min_lines=4, width=500, value=current_link)
+    # Поле ввода скрывает длинную ссылку, чтобы никто не подсмотрел ее из-за плеча (password=True)
+    dialog_link_input = ft.TextField(
+        label="Ссылка vless://", 
+        multiline=True, 
+        min_lines=4, 
+        width=500, 
+        value=current_link,
+        password=True,
+        can_reveal_password=True
+    )
     
     def save_dialog(e):
+        """
+        Сохранение настроек.
+        Зачем применяем: Разделяем потоки данных. Ключ уходит в зашифрованный Keychain, 
+        а обычный режим работы (mode) сохраняется в JSON.
+        """
         nonlocal current_link
-        current_link = dialog_link_input.value.strip()
-        save_settings(current_link, mode_picker.value)
-        profile_subtitle.value = "✓ Ключ установлен" if current_link else "Ключ не задан"
+        new_link = dialog_link_input.value.strip()
+        
+        if new_link:
+            core.save_vless_link(new_link)
+            current_link = new_link
+            
+        save_mode(mode_picker.value)
+        
+        profile_subtitle.value = "✓ Ключ установлен (Keychain)" if current_link else "Ключ не задан"
         profile_subtitle.color = ft.Colors.GREEN_300 if current_link else ft.Colors.RED_300
         page.close(link_dialog)
         page.update()
@@ -101,11 +116,18 @@ def main(page: ft.Page):
     link_dialog = ft.AlertDialog(
         title=ft.Text("Настройка ключа"),
         content=dialog_link_input,
-        actions=[ft.TextButton("Отмена", on_click=lambda e: page.close(link_dialog)),
-                 ft.ElevatedButton("Сохранить", on_click=save_dialog)]
+        actions=[
+            ft.TextButton("Отмена", on_click=lambda e: page.close(link_dialog)),
+            ft.ElevatedButton("Сохранить", on_click=save_dialog)
+        ]
     )
 
-    profile_subtitle = ft.Text("✓ Ключ установлен" if current_link else "Ключ не задан", color=ft.Colors.GREEN_300, size=13)
+    profile_subtitle = ft.Text(
+        "✓ Ключ установлен (Keychain)" if current_link else "Ключ не задан", 
+        color=ft.Colors.GREEN_300 if current_link else ft.Colors.RED_300, 
+        size=13
+    )
+    
     profile_card = ft.Container(
         padding=15, width=600, bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.BLUE), border_radius=8,
         content=ft.Row([
@@ -116,20 +138,21 @@ def main(page: ft.Page):
 
     def connect_click(e):
         nonlocal timer_running, start_time
-        if not current_link: return
+        if not current_link: 
+            return
 
         status_text.value = "Статус: ЗАПУСК..."
         status_text.color = ft.Colors.YELLOW_400
         btn_connect.disabled = True
         page.update()
 
+        # Запускаем ядро, передавая обработчик падений
         result = core.start_vpn(current_link, mode_picker.value, on_crash_callback=on_vpn_crash)
 
         if result == "успех":
             status_text.value = f"Статус: ПОДКЛЮЧЕНО ({mode_picker.value})"
             status_text.color = ft.Colors.GREEN_400
             
-            # ЗАПУСК ТАЙМЕРА
             start_time = time.time()
             timer_running = True
             session_timer_text.visible = True
@@ -143,7 +166,7 @@ def main(page: ft.Page):
     def disconnect_click(e):
         nonlocal timer_running
         core.stop_vpn()
-        timer_running = False # Останавливаем таймер
+        timer_running = False
         session_timer_text.visible = False
         status_text.value = "Статус: ОТКЛЮЧЕНО"
         status_text.color = ft.Colors.RED_400
@@ -162,7 +185,7 @@ def main(page: ft.Page):
         ft.Row([btn_connect, btn_disconnect], spacing=20),
         ft.Divider(height=20, color="transparent"),
         status_text,
-        session_timer_text # Добавили таймер в самый низ
+        session_timer_text
     )
 
 if __name__ == "__main__":
