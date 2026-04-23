@@ -13,11 +13,13 @@ import logging
 import keyring
 from urllib.parse import urlparse, unquote, parse_qs
 
+
 # --- Настройка путей и глобальных переменных ---
 core_process = None
 is_manually_stopped = False
 MAX_RETRIES = 3
 current_retries = 0
+
 
 HOME_DIR = os.path.expanduser("~/.myvpn")
 os.makedirs(HOME_DIR, exist_ok=True)
@@ -25,17 +27,19 @@ CONFIG_FILE = os.path.join(HOME_DIR, "config.json")
 SINGBOX_PATH = os.path.join(HOME_DIR, "sing-box")
 LOG_FILE = os.path.join(HOME_DIR, "octara.log")
 
+
 def clear_logs():
-    """Очищает файл логов."""
+    """Жестко удаляет файл логов перед стартом сессии."""
     try:
-        with open(LOG_FILE, 'w', encoding='utf-8') as f:
-            f.truncate(0)
+        if os.path.exists(LOG_FILE):
+            os.remove(LOG_FILE)
     except Exception:
-        pass
+        subprocess.run(f"rm -f {LOG_FILE}", shell=True, stderr=subprocess.DEVNULL)
+
 
 def setup_logger():
     logging.basicConfig(
-        level=logging.INFO, 
+        level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(LOG_FILE, encoding='utf-8'),
@@ -43,7 +47,9 @@ def setup_logger():
         ]
     )
 
+
 setup_logger()
+
 
 # --- Безопасное хранение данных ---
 def save_vless_link(link):
@@ -52,6 +58,7 @@ def save_vless_link(link):
     except Exception as e:
         logging.error(f"Ошибка сохранения в Keychain: {e}")
 
+
 def get_vless_link():
     try:
         return keyring.get_password("OctaraVPN", "vless_config")
@@ -59,17 +66,20 @@ def get_vless_link():
         logging.error(f"Ошибка чтения из Keychain: {e}")
         return None
 
+
 # --- Системные функции ---
 def setup_singbox():
     base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     bundled_singbox = os.path.join(base_path, "sing-box")
-    
+
     if os.path.exists(bundled_singbox):
         shutil.copy(bundled_singbox, SINGBOX_PATH)
         os.chmod(SINGBOX_PATH, stat.S_IRWXU)
         subprocess.run(["/usr/bin/xattr", "-rd", "com.apple.quarantine", SINGBOX_PATH], stderr=subprocess.DEVNULL)
 
+
 setup_singbox()
+
 
 def check_and_setup_permissions():
     sudoers_file = "/etc/sudoers.d/myvpn_v2"
@@ -86,19 +96,28 @@ def check_and_setup_permissions():
     except Exception:
         return False
 
+
 def lock_network():
-    subprocess.run(["/usr/bin/sudo", "-n", "/sbin/pfctl", "-e", "-f", "-"], input="block drop all", text=True, stderr=subprocess.DEVNULL)
+    """Kill-switch: блокировка трафика при падении VPN."""
+    subprocess.run(
+        ["/usr/bin/sudo", "-n", "/sbin/pfctl", "-e", "-f", "-"],
+        input="block drop all", text=True, stderr=subprocess.DEVNULL
+    )
+
 
 def unlock_network():
+    """Разблокировка трафика."""
     subprocess.run(["/usr/bin/sudo", "-n", "/sbin/pfctl", "-d"], stderr=subprocess.DEVNULL)
+
 
 # --- Работа с сетью и конфигами ---
 def parse_vless_link(vless_url):
     try:
         vless_url = re.sub(r'\s+', '', vless_url).split('#')[0]
         parsed_url = urlparse(vless_url)
-        if parsed_url.scheme != 'vless': return None
-            
+        if parsed_url.scheme != 'vless':
+            return None
+
         params = {k: unquote(v[0]) for k, v in parse_qs(parsed_url.query).items()}
         return {
             "uuid": parsed_url.username,
@@ -109,8 +128,10 @@ def parse_vless_link(vless_url):
     except Exception:
         return None
 
+
 def set_system_proxy(enable=True):
-    if platform.system() != "Darwin": return
+    if platform.system() != "Darwin":
+        return
     state = "on" if enable else "off"
     cmds = [
         ["networksetup", "-setwebproxystate", "Wi-Fi", state],
@@ -123,10 +144,12 @@ def set_system_proxy(enable=True):
         ])
     for cmd in cmds:
         subprocess.run(cmd, capture_output=True)
+
+
 def generate_singbox_config(data, mode):
     server_host = data["server_ip"]
     params = data["params"]
-    
+
     vless_outbound = {
         "type": "vless",
         "tag": "vless-out",
@@ -136,9 +159,10 @@ def generate_singbox_config(data, mode):
         "packet_encoding": "xudp",
         "tcp_fast_open": True,
     }
-    
-    if params.get("flow"): vless_outbound["flow"] = params["flow"]
-        
+
+    if params.get("flow"):
+        vless_outbound["flow"] = params["flow"]
+
     if params.get("security") in ["tls", "reality"]:
         vless_outbound["tls"] = {
             "enabled": True,
@@ -153,13 +177,14 @@ def generate_singbox_config(data, mode):
                 "short_id": params.get("sid", ""),
             }
 
+    # --- Inbounds ---
     inbounds = []
     if mode in ["VPN (TUN)", "Умный VPN (Split)"]:
         inbounds.append({
             "type": "tun",
             "tag": "tun-in",
             "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-            "mtu": 9000, # MTU 9000 критически важен для стека gvisor и Gemini
+            "mtu": 9000,
             "auto_route": True,
             "strict_route": True,
             "stack": "gvisor",
@@ -176,72 +201,87 @@ def generate_singbox_config(data, mode):
             "sniff_override_destination": True
         })
 
-    # Список доменов Google для маршрутизации и блокировки QUIC
-    google_domains = [
-        "google.com", "googleapis.com", "gstatic.com", 
-        "youtube.com", "googlevideo.com", "ytimg.com", "ggpht.com",
-        "generativeai.google", "googleusercontent.com", "gvt1.com"
-    ]
+    ru_domains = [".ru", ".рф", ".su", "yandex.ru", "vk.com", "mail.ru", "gosuslugi.ru"]
 
+    # --- Маршруты ---
     rules = [
         {"protocol": "dns", "outbound": "dns-out"},
         {"ip_cidr": [f"{server_host}/32"], "outbound": "direct-out"},
-        {"ip_cidr": ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8"], "outbound": "direct-out"}
+        {"ip_cidr": ["192.168.0.0/16", "10.0.0.0/8", "127.0.0.0/8"], "outbound": "direct-out"},
+        # Apple сервисы — напрямую
+        {
+            "network": "udp",
+            "port": 443,
+            "domain_suffix": ["icloud.com", "apple.com", "mzstatic.com"],
+            "outbound": "direct-out"
+        },
+        # Блокируем QUIC для стабильной работы Gemini
+        {"network": "udp", "port": 443, "outbound": "block-out"},
     ]
-    
-    # ХИРУРГИЧЕСКАЯ БЛОКИРОВКА: Блокируем UDP 443 ТОЛЬКО для Google.
-    # Apple (mask.icloud.com) и другие системы теперь не пострадают.
-    rules.append({
-        "network": "udp", 
-        "port": 443, 
-        "domain_suffix": google_domains, 
-        "outbound": "block-out"
-    })
 
     if mode == "Умный VPN (Split)":
-        rules.append({
-            "domain_suffix": google_domains, 
-            "outbound": "vless-out"
-        })
-        rules.append({
-            "domain_suffix": [".ru", ".рф", ".su", "yandex.ru", "vk.com", "mail.ru"], 
-            "outbound": "direct-out"
-        })
+        rules.append({"domain_suffix": ru_domains, "outbound": "direct-out"})
+
+    # --- DNS правила (без петли bootstrap) ---
+    dns_rules = []
+    if mode == "Умный VPN (Split)":
+    # Google домены резолвим через VPN-DNS
+     dns_rules.append({
+        "domain_suffix": [
+            "google.com", "googleapis.com", "gstatic.com",
+            "youtube.com", "googlevideo.com", "gemini.google.com",
+            "googleusercontent.com"
+        ],
+        "server": "google-dns"
+    })
+    # РУ домены резолвим локально
+    dns_rules.append({"domain_suffix": ru_domains, "server": "local-dns"})
 
     config = {
         "log": {"level": "info"},
         "dns": {
-            # Простая и надежная конфигурация DNS, которая работала у нас с самого начала
             "servers": [
-                {"tag": "google-dns", "address": "8.8.8.8", "detour": "vless-out"},
-                {"tag": "cloudflare-dns", "address": "1.1.1.1", "detour": "vless-out"}
+                {
+                    "tag": "google-dns",
+                    "address": "8.8.8.8",
+                    "detour": "vless-out",
+                    "address_resolver": "local-dns"  # разрываем DNS bootstrap петлю
+                },
+                {
+                    "tag": "local-dns",
+                    "address": "local",
+                    "detour": "direct-out"
+                }
             ],
+            "rules": dns_rules,
             "strategy": "ipv4_only",
             "independent_cache": True,
         },
         "inbounds": inbounds,
         "outbounds": [
-            vless_outbound, 
-            {"type": "direct", "tag": "direct-out"}, 
+            vless_outbound,
+            {"type": "direct", "tag": "direct-out"},
             {"type": "dns", "tag": "dns-out"},
             {"type": "block", "tag": "block-out"}
         ],
         "route": {
-            "rules": rules, 
-            "auto_detect_interface": True, 
-            "final": "vless-out" if mode == "VPN (TUN)" else "direct-out"
+            "rules": rules,
+            "auto_detect_interface": True,
+            "final": "vless-out"
         },
     }
-    
+
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
+
 
 # --- Управление жизненным циклом ---
 def monitor_process(process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback):
     global current_retries, core_process
     process.wait()
 
-    if is_manually_stopped: return
+    if is_manually_stopped:
+        return
 
     core_process = None
     logging.error(f"Ядро неожиданно остановилось. Попытка {current_retries + 1}/{MAX_RETRIES}")
@@ -254,72 +294,82 @@ def monitor_process(process, vless_link, mode, log_callback, on_crash_callback, 
             on_recover_callback(mode)
     else:
         lock_network()
-        if on_crash_callback: on_crash_callback("Лимит попыток исчерпан.")
+        if on_crash_callback:
+            on_crash_callback("Лимит попыток исчерпан.")
+
 
 def start_vpn(vless_link, mode, log_callback=None, on_crash_callback=None, on_recover_callback=None, is_retry=False):
     global core_process, is_manually_stopped, current_retries
-    
-    clear_logs() # Очистка логов перед каждым новым запуском
-    
+
+    clear_logs()
+
     if not is_retry:
         current_retries = 0
         is_manually_stopped = False
-        
+
     unlock_network()
-    
-    if core_process is not None: return "уже работает"
-        
+
+    if core_process is not None:
+        return "уже работает"
+
     parsed_data = parse_vless_link(vless_link)
-    if not parsed_data: return "ошибка ссылки"
-        
+    if not parsed_data:
+        return "ошибка ссылки"
+
     generate_singbox_config(parsed_data, mode)
     subprocess.run(["/usr/bin/sudo", "-n", "/usr/bin/killall", "sing-box"], stderr=subprocess.DEVNULL)
-    
+
     try:
         cmd = [SINGBOX_PATH, "run", "-c", CONFIG_FILE]
         if mode in ["VPN (TUN)", "Умный VPN (Split)"]:
             cmd = ["/usr/bin/sudo", "-n"] + cmd
-            
+
         core_process = subprocess.Popen(
-            cmd, 
-            stdin=subprocess.DEVNULL, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.STDOUT, 
-            text=True, 
-            bufsize=1, 
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
             cwd=HOME_DIR
         )
-        
+
         def read_logs():
             for line in core_process.stdout:
                 clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line.strip())
-                # ВАЖНО: Фильтруем спам на уровне Python. Строки с таймаутом просто игнорируются.
                 if clean_line and "operation timed out" not in clean_line:
                     logging.info(f"[Core]: {clean_line}")
-                    if log_callback: log_callback(clean_line)
-                    
+                    if log_callback:
+                        log_callback(clean_line)
+
         threading.Thread(target=read_logs, daemon=True).start()
         time.sleep(0.5)
-        
+
         if core_process.poll() is not None:
             core_process = None
             return "Нет прав администратора (sudo)"
-            
-        threading.Thread(target=monitor_process, args=(core_process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback), daemon=True).start()
-        
-        if mode == "Системный прокси": set_system_proxy(True)
+
+        threading.Thread(
+            target=monitor_process,
+            args=(core_process, vless_link, mode, log_callback, on_crash_callback, on_recover_callback),
+            daemon=True
+        ).start()
+
+        if mode == "Системный прокси":
+            set_system_proxy(True)
         return "успех"
-        
+
     except Exception as e:
         core_process = None
         return f"ошибка: {e}"
+
 
 def stop_vpn():
     global core_process, is_manually_stopped
     is_manually_stopped = True
     unlock_network()
     set_system_proxy(False)
-    
+
     if core_process is not None:
         subprocess.run(["/usr/bin/sudo", "-n", "/usr/bin/killall", "sing-box"], stderr=subprocess.DEVNULL)
         core_process.terminate()

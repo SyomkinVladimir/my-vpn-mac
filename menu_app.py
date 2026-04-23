@@ -4,6 +4,7 @@ import json
 import os
 import time
 import threading
+import subprocess # Добавлено для Popen
 
 HOME_DIR = os.path.expanduser("~/.myvpn")
 SETTINGS_FILE = os.path.join(HOME_DIR, "settings.json")
@@ -20,20 +21,19 @@ def load_settings():
 class OctaraMenuApp(rumps.App):
     def __init__(self):
         super(OctaraMenuApp, self).__init__("🐙", quit_button=None)
-        
+
         self.timer_running = False
         self.start_time = 0
 
         self.status_item = rumps.MenuItem("Статус: ОТКЛЮЧЕНО")
         self.timer_item = rumps.MenuItem("Время сессии: 00:00:00")
         self.timer_item.hidden = True
-        
+
         self.connect_btn = rumps.MenuItem("🟢 Подключить", callback=self.connect)
         self.disconnect_btn = rumps.MenuItem("🔴 Отключить", callback=self.disconnect)
         self.disconnect_btn.hidden = True
-        
+
         self.logs_btn = rumps.MenuItem("📜 Открыть логи", callback=self.open_logs)
-        
         self.settings_btn = rumps.MenuItem("⚙️ Настройки (main.py)", callback=self.open_settings)
         self.quit_btn = rumps.MenuItem("Выход", callback=self.quit_app)
 
@@ -61,10 +61,8 @@ class OctaraMenuApp(rumps.App):
         settings = load_settings()
         mode = settings.get("mode", "Умный VPN (Split)")
 
-        # Data Migration (Миграция данных): Читаем из зашифрованного Keychain
         link = core.get_vless_link()
 
-        # Если в Keychain пусто, берем из старого файла и переносим в хранилище Apple
         if not link:
             old_link = settings.get("link", "")
             if old_link:
@@ -77,15 +75,16 @@ class OctaraMenuApp(rumps.App):
 
         self.status_item.title = "Статус: ЗАПУСК..."
         self.connect_btn.hidden = True
-        
+
         threading.Thread(target=self._run_core, args=(link, mode), daemon=True).start()
 
     def _run_core(self, link, mode):
-        result = core.start_vpn(link, mode, on_crash_callback=self.on_crash)
-        
+        # Добавлен on_recover_callback
+        result = core.start_vpn(link, mode, on_crash_callback=self.on_crash, on_recover_callback=self.on_recover)
+
         if result == "успех":
             self.status_item.title = f"Статус: ПОДКЛЮЧЕНО ({mode})"
-            self.title = "🐙" 
+            self.title = "🟢" # Иконка успешного подключения
             self.disconnect_btn.hidden = False
             self.start_time = time.time()
             self.timer_running = True
@@ -93,36 +92,45 @@ class OctaraMenuApp(rumps.App):
         else:
             self.status_item.title = f"⚠️ Ошибка: {result}"
             self.connect_btn.hidden = False
-            self.title = "🐙" 
+            self.title = "🔴" # Иконка ошибки
             rumps.alert("Ошибка ядра", result)
 
     def on_crash(self, reason):
         self.status_item.title = f"⚠️ Ошибка: {reason}"
-        self.title = "🐙"
+        self.title = "🔴" # Иконка ошибки
         self.timer_running = False
         self.timer_item.hidden = True
         self.connect_btn.hidden = False
         self.disconnect_btn.hidden = True
-        core.unlock_network() 
+        # УДАЛЕНО: core.unlock_network() - Kill-switch теперь жестко блокирует сеть
+
+    def on_recover(self, mode):
+        self.status_item.title = f"Статус: ПОДКЛЮЧЕНО ({mode}) [Восстановлено]"
+        self.title = "🟢" # Возвращаем зеленую иконку
+        self.timer_running = True
+        self.start_time = time.time()
+        self.timer_item.hidden = False
+        self.disconnect_btn.hidden = False
+        self.connect_btn.hidden = True
 
     def disconnect(self, _):
         core.stop_vpn()
         self.timer_running = False
         self.timer_item.hidden = True
         self.status_item.title = "Статус: ОТКЛЮЧЕНО"
-        self.title = "🐙"
+        self.title = "🐙" # Стандартная иконка при отключении
         self.disconnect_btn.hidden = True
         self.connect_btn.hidden = False
 
     def open_logs(self, _):
-        # Открывает лог в нативном приложении Console
         log_path = os.path.expanduser("~/.myvpn/octara.log")
-        os.system(f"open -a Console {log_path}")
+        subprocess.Popen(["open", "-a", "Console", log_path])
 
     def open_settings(self, _):
         project_dir = os.path.expanduser("~/my-vpn-mac")
         flet_bin = os.path.join(project_dir, "venv/bin/flet")
-        os.system(f"cd {project_dir} && {flet_bin} run main.py &")
+        # ПРАВКА: Используем Popen для безопасного асинхронного запуска
+        subprocess.Popen([flet_bin, "run", "main.py"], cwd=project_dir)
 
     def quit_app(self, _):
         self.disconnect(None)

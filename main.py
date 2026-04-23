@@ -5,16 +5,11 @@ import os
 import time
 import threading
 
-# Настройка путей. Оставляем только для хранения несекретных настроек (режима работы)
 HOME_DIR = os.path.expanduser("~/.myvpn")
 os.makedirs(HOME_DIR, exist_ok=True)
 SETTINGS_FILE = os.path.join(HOME_DIR, "settings.json")
 
 def load_mode():
-    """
-    Зачем применяем: Загружает только несекретные пользовательские предпочтения.
-    Пароль (VLESS-ссылка) отсюда ИСКЛЮЧЕН ради безопасности.
-    """
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -24,7 +19,6 @@ def load_mode():
     return "Умный VPN (Split)"
 
 def save_mode(mode):
-    """Сохраняет выбранный режим маршрутизации в обычный JSON."""
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump({"mode": mode}, f)
 
@@ -36,10 +30,6 @@ def main(page: ft.Page):
     page.window_icon = "Octara.png"
 
     saved_mode = load_mode()
-    
-    # ИНТЕГРАЦИЯ БЕЗОПАСНОСТИ: 
-    # Зачем применяем: Читаем ключ напрямую из системной Связки ключей macOS через наше ядро.
-    # Если ключа нет, возвращаем пустую строку, чтобы интерфейс не упал.
     current_link = core.get_vless_link() or ""
     
     timer_running = False
@@ -52,7 +42,6 @@ def main(page: ft.Page):
         page.add(ft.Text("⚠️ Требуются права администратора!", color=ft.Colors.ORANGE_400))
 
     def update_timer():
-        """Фоновый поток обновления таймера."""
         nonlocal timer_running
         while timer_running:
             elapsed = int(time.time() - start_time)
@@ -63,14 +52,26 @@ def main(page: ft.Page):
             time.sleep(1)
 
     def on_vpn_crash(error_reason=""):
-        """Обработчик аварийной остановки."""
         nonlocal timer_running
         timer_running = False
+        session_timer_text.visible = False # ПРАВКА 1: Скрываем таймер при краше
         status_text.value = f"⚠️ ОШИБКА: {error_reason}"
         status_text.color = ft.Colors.ORANGE_700
         btn_connect.disabled = False
         page.update()
 
+    # ПРАВКА 2: Добавили коллбэк для восстановления (Recover)
+    def on_vpn_recover(mode):
+        nonlocal timer_running, start_time
+        status_text.value = f"Статус: ПОДКЛЮЧЕНО ({mode}) [Восстановлено]"
+        status_text.color = ft.Colors.GREEN_400
+        start_time = time.time()
+        timer_running = True
+        session_timer_text.visible = True
+        threading.Thread(target=update_timer, daemon=True).start()
+        page.update()
+
+    # ПРАВКА 3: Автосохранение режима при изменении дропдауна (on_change)
     mode_picker = ft.Dropdown(
         label="Режим работы",
         value=saved_mode,
@@ -79,10 +80,10 @@ def main(page: ft.Page):
             ft.dropdown.Option("VPN (TUN)"),
             ft.dropdown.Option("Умный VPN (Split)")
         ],
-        width=300
+        width=300,
+        on_change=lambda e: save_mode(e.control.value) 
     )
 
-    # Поле ввода скрывает длинную ссылку, чтобы никто не подсмотрел ее из-за плеча (password=True)
     dialog_link_input = ft.TextField(
         label="Ссылка vless://", 
         multiline=True, 
@@ -94,11 +95,6 @@ def main(page: ft.Page):
     )
     
     def save_dialog(e):
-        """
-        Сохранение настроек.
-        Зачем применяем: Разделяем потоки данных. Ключ уходит в зашифрованный Keychain, 
-        а обычный режим работы (mode) сохраняется в JSON.
-        """
         nonlocal current_link
         new_link = dialog_link_input.value.strip()
         
@@ -138,21 +134,19 @@ def main(page: ft.Page):
 
     def connect_click(e):
         nonlocal timer_running, start_time
-        if not current_link: 
-            return
+        if not current_link: return
 
         status_text.value = "Статус: ЗАПУСК..."
         status_text.color = ft.Colors.YELLOW_400
         btn_connect.disabled = True
         page.update()
 
-        # Запускаем ядро, передавая обработчик падений
-        result = core.start_vpn(current_link, mode_picker.value, on_crash_callback=on_vpn_crash)
+        # Подключаем коллбэки краша и восстановления
+        result = core.start_vpn(current_link, mode_picker.value, on_crash_callback=on_vpn_crash, on_recover_callback=on_vpn_recover)
 
         if result == "успех":
             status_text.value = f"Статус: ПОДКЛЮЧЕНО ({mode_picker.value})"
             status_text.color = ft.Colors.GREEN_400
-            
             start_time = time.time()
             timer_running = True
             session_timer_text.visible = True
