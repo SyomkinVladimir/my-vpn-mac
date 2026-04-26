@@ -124,7 +124,13 @@ class OctaraMenuApp(rumps.App):
 
     def open_logs(self, _):
         log_path = os.path.expanduser("~/.myvpn/octara.log")
-        subprocess.Popen(["open", "-a", "Console", log_path])
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+        if not os.path.exists(log_path):
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write("Лог-файл создан. Подключите VPN для появления записей.\n")
+
+        subprocess.Popen(["open", log_path])
 
     def open_settings(self, _):
         project_dir = os.path.expanduser("~/my-vpn-mac")

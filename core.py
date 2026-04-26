@@ -29,12 +29,13 @@ LOG_FILE = os.path.join(HOME_DIR, "octara.log")
 
 
 def clear_logs():
-    """Жестко удаляет файл логов перед стартом сессии."""
+    """Очищает содержимое лог-файла, но не удаляет его."""
     try:
-        if os.path.exists(LOG_FILE):
-            os.remove(LOG_FILE)
-    except Exception:
-        subprocess.run(f"rm -f {LOG_FILE}", shell=True, stderr=subprocess.DEVNULL)
+        os.makedirs(HOME_DIR, exist_ok=True)
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.truncate(0)
+    except Exception as e:
+        logging.error(f"Не удалось очистить лог-файл: {e}")
 
 
 def setup_logger():
@@ -221,6 +222,10 @@ def generate_singbox_config(data, mode):
 
     if mode == "Умный VPN (Split)":
         rules.append({"domain_suffix": ru_domains, "outbound": "direct-out"})
+        rules.append({
+            "domain_suffix": ["perplexity.ai"],
+            "outbound": "direct-out"
+    })
 
     # --- DNS правила (без петли bootstrap) ---
     dns_rules = []
